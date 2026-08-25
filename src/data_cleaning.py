@@ -70,7 +70,8 @@ class DataCleaner:
             stratify=temp_df['label']
         )
 
-        return {'train': train_df, 'validation': val_df, 'test': test_df}
+
+        return {'train': train_df, 'validation': val_df, 'test': test_df, 'labels': clean_df['label'].unique()}
 
 
 
