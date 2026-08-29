@@ -4,6 +4,7 @@ from cosmic_dataset import CosmicDataset
 import torchvision
 from torch.utils.data import DataLoader
 import torch.nn as nn
+from sklearn.metrics import confusion_matrix
 
 
 class CosmicCNN(nn.Module):
@@ -99,19 +100,102 @@ class CosmicCNN(nn.Module):
 
         return x
 
+    def _train(self):
+        self.train()
+
+        for epoch in range(self.epochs):
+            total_loss = 0
+
+            for x_batch_img, y_batch_lb in self.train_loader:
+                self.optimizer.zero_grad()
+                x_batch_img = x_batch_img.to(self.device)
+                y_batch_lb = y_batch_lb.to(self.device)
+
+                output = self(x_batch_img)
+                loss = self.criterion(output, y_batch_lb)
+
+                loss.backward()
+                self.optimizer.step()
+
+                total_loss += loss.item()
+
+            train_loss = total_loss / len(self.train_loader)
+            val_accuracy, val_loss = self._validate()
+
+            print(
+                f"Epoch {epoch + 1} / {self.epochs} "
+                f"| train loss: {train_loss:4f} "
+                f" validation loss: {val_loss:4f} "
+                f" validation accuracy: {val_accuracy:4f}"
+            )
+
+    def _validation(self):
+        self.eval()
+
+        total_loss = 0
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for x_batch_img, y_batch_lb in self.train_loader:
+                self.optimizer.zero_grad()
+                x_batch_img = x_batch_img.to(self.device)
+                y_batch_lb = y_batch_lb.to(self.device)
+
+                output = self(x_batch_img)
+                loss = self.criterion(output, y_batch_lb)
+
+                total_loss += loss.item()
+
+                predictions = output.argmax(dim=1)
+                correct += (predictions == y_batch_lb).sum().item()
+
+        average_loss = total_loss / len(self.train_loader)
+        accuracy = correct / total
+
+        return accuracy, average_loss
+
+    def _test(self):
+        self.eval()
+
+        all_predictions = []
+        all_targets = []
+
+        total_loss = 0
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for x_batch_img, y_batch_lb in self.train_loader:
+                self.optimizer.zero_grad()
+                x_batch_img = x_batch_img.to(self.device)
+                y_batch_lb = y_batch_lb.to(self.device)
+
+                output = self(x_batch_img)
+                loss = self.criterion(output, y_batch_lb)
+
+                total_loss += loss.item()
+
+                predictions = output.argmax(dim=1)
+                correct += (predictions == y_batch_lb).sum().item()
+
+                all_predictions.extend(predictions.cpu().numpy())
+                all_targets.extend(y_batch_lb.cpu().numpy())
+
+        average_loss = total_loss / len(self.train_loader)
+        accuracy = correct / total
+
+        matrix = confusion_matrix(all_targets, all_predictions)
+
+        return accuracy, average_loss, matrix
+
     def see_the_world_my_child(self):
-        x_batch_img, y_batch_lb = next(iter(self.train_loader))
+        print("Starting training")
+        self._train()
+        test_accuracy, test_loss, conf_matrix = self._test()
 
-        self.optimizer.zero_grad()
-        x_batch_img = x_batch_img.to(self.device)
-        y_batch_lb = y_batch_lb.to(self.device)
-
-        output = self(x_batch_img)
-        loss = self.criterion(output, y_batch_lb)
-
-        loss.backward()
-
-        self.optimizer.step()
-
-        print(loss)
-        print(loss.shape)
+        print(
+            f"Test accuracy: {test_accuracy:4f}\n"
+            f"Test loss: {test_loss:4f}\n"
+            f"Confusion matrix:\n{conf_matrix}"
+        )
