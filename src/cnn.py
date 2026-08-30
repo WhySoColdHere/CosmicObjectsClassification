@@ -1,3 +1,4 @@
+import time
 import torch
 from pandas import Series
 from cosmic_dataset import CosmicDataset
@@ -5,6 +6,7 @@ import torchvision
 from torch.utils.data import DataLoader
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix
+
 
 
 class CosmicCNN(nn.Module):
@@ -38,9 +40,9 @@ class CosmicCNN(nn.Module):
         self.layer2 = nn.Linear(512, 128)
         self.layer_out = nn.Linear(128, 8)
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
 
         self.to(self.device)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
 
         self._create_transforms()
         self._create_datasets(dataset)
@@ -120,7 +122,7 @@ class CosmicCNN(nn.Module):
                 total_loss += loss.item()
 
             train_loss = total_loss / len(self.train_loader)
-            val_accuracy, val_loss = self._validate()
+            val_accuracy, val_loss = self._validation()
 
             print(
                 f"Epoch {epoch + 1} / {self.epochs} "
@@ -137,8 +139,7 @@ class CosmicCNN(nn.Module):
         total = 0
 
         with torch.no_grad():
-            for x_batch_img, y_batch_lb in self.train_loader:
-                self.optimizer.zero_grad()
+            for x_batch_img, y_batch_lb in self.val_loader:
                 x_batch_img = x_batch_img.to(self.device)
                 y_batch_lb = y_batch_lb.to(self.device)
 
@@ -149,8 +150,9 @@ class CosmicCNN(nn.Module):
 
                 predictions = output.argmax(dim=1)
                 correct += (predictions == y_batch_lb).sum().item()
+                total += y_batch_lb.size(0)
 
-        average_loss = total_loss / len(self.train_loader)
+        average_loss = total_loss / len(self.val_loader)
         accuracy = correct / total
 
         return accuracy, average_loss
@@ -166,8 +168,7 @@ class CosmicCNN(nn.Module):
         total = 0
 
         with torch.no_grad():
-            for x_batch_img, y_batch_lb in self.train_loader:
-                self.optimizer.zero_grad()
+            for x_batch_img, y_batch_lb in self.test_loader:
                 x_batch_img = x_batch_img.to(self.device)
                 y_batch_lb = y_batch_lb.to(self.device)
 
@@ -181,8 +182,9 @@ class CosmicCNN(nn.Module):
 
                 all_predictions.extend(predictions.cpu().numpy())
                 all_targets.extend(y_batch_lb.cpu().numpy())
+                total += y_batch_lb.size(0)
 
-        average_loss = total_loss / len(self.train_loader)
+        average_loss = total_loss / len(self.test_loader)
         accuracy = correct / total
 
         matrix = confusion_matrix(all_targets, all_predictions)
@@ -199,3 +201,14 @@ class CosmicCNN(nn.Module):
             f"Test loss: {test_loss:4f}\n"
             f"Confusion matrix:\n{conf_matrix}"
         )
+
+    def diagnose(self):
+        start = time.perf_counter()
+
+        for batch_counter, (x, y) in enumerate(self.train_loader):
+            if batch_counter >= 10:
+                break
+
+        end = time.perf_counter()
+
+        print(f"10 batches loading time: {end - start}")
