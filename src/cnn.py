@@ -16,6 +16,7 @@ class CosmicCNN(nn.Module):
         self.common_img_size = (128, 128)
         self.labels = dataset['labels']
         self.epochs = 10
+        self.workers_num = 4
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.train_transform = None
@@ -71,19 +72,22 @@ class CosmicCNN(nn.Module):
         self.train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True
+            shuffle=True,
+            num_workers=self.workers_num
         )
 
         self.val_loader = DataLoader(
             self.validation_dataset,
             batch_size=self.batch_size,
-            shuffle=False
+            shuffle=False,
+            num_workers=self.workers_num
         )
 
         self.test_loader = DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            shuffle=False
+            shuffle=False,
+            num_workers=self.workers_num
         )
 
     def forward(self, x):

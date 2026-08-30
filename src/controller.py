@@ -16,7 +16,10 @@ class Controller:
         cnn = CosmicCNN(DataCleaner(DATASET_PATH).get_split_data())
         cnn.diagnose()
 
-controller = Controller()
+
+
+if __name__ == '__main__':
+    controller = Controller()
 
 
 
