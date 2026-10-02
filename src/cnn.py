@@ -5,7 +5,7 @@ import torchvision
 from torch.utils.data import DataLoader
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix, classification_report
-
+from os import path
 
 
 class CosmicCNN(nn.Module):
@@ -14,6 +14,9 @@ class CosmicCNN(nn.Module):
         self.batch_size = 32
         self.labels = dataset['labels']
         self.epochs = 10
+        self.best_validation_loss = float('inf')
+        self.best_validation_loss_epoch = 0
+        self.states_path = path.join("../", "states")
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.train_transform = None
@@ -131,6 +134,11 @@ class CosmicCNN(nn.Module):
                 f" validation accuracy: {val_accuracy:4f}"
             )
 
+            if val_loss < self.best_validation_loss:
+                self.best_validation_loss = val_loss
+                self.best_validation_loss_epoch = epoch + 1
+                torch.save(self.state_dict(), path.join(self.states_path, "best_model_state.pth"))
+
     def _validation(self):
         self.eval()
 
@@ -158,6 +166,7 @@ class CosmicCNN(nn.Module):
         return accuracy, average_loss
 
     def _test(self):
+        torch.load(path.join(self.states_path, "best_model_state.pth"))
         self.eval()
 
         all_predictions = []
@@ -207,4 +216,5 @@ class CosmicCNN(nn.Module):
             f"Test loss: {test_loss:4f}\n"
             f"Confusion matrix:\n{self.labels}\n{conf_matrix}\n"
             f"Report:\n{report}"
+            f"Model epoch: {self.best_validation_loss_epoch}\n"
         )
