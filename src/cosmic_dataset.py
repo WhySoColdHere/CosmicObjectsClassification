@@ -1,7 +1,6 @@
 from PIL import Image
 from torch.utils.data import Dataset
 
-
 class CosmicDataset(Dataset):
     def __init__(self, dataset, labels, transform):
         self.dataset = dataset

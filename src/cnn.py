@@ -1,11 +1,10 @@
-import time
 import torch
 from pandas import Series
 from cosmic_dataset import CosmicDataset
 import torchvision
 from torch.utils.data import DataLoader
 import torch.nn as nn
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report
 
 
 
@@ -13,10 +12,8 @@ class CosmicCNN(nn.Module):
     def __init__(self, dataset: Series):
         super().__init__()
         self.batch_size = 32
-        self.common_img_size = (128, 128)
         self.labels = dataset['labels']
         self.epochs = 10
-        self.workers_num = 4
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.train_transform = None
@@ -35,11 +32,16 @@ class CosmicCNN(nn.Module):
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.relu = nn.ReLU()
         self.flatten = nn.Flatten()
-        self.layer1 = nn.Linear(65536, 512)
+        self.layer1 = nn.Linear(16384, 512)
         self.layer2 = nn.Linear(512, 128)
         self.layer_out = nn.Linear(128, 8)
+
         self.criterion = nn.CrossEntropyLoss()
 
         self.to(self.device)
@@ -50,18 +52,9 @@ class CosmicCNN(nn.Module):
         self._create_dataloaders()
 
     def _create_transforms(self):
-        self.train_transform = torchvision.transforms.Compose([
-            torchvision.transforms.Resize(self.common_img_size),
-            torchvision.transforms.ToTensor()
-        ])
-        self.val_transform = torchvision.transforms.Compose([
-            torchvision.transforms.Resize(self.common_img_size),
-            torchvision.transforms.ToTensor()
-        ])
-        self.test_transform = torchvision.transforms.Compose([
-            torchvision.transforms.Resize(self.common_img_size),
-            torchvision.transforms.ToTensor()
-        ])
+        self.train_transform = torchvision.transforms.ToTensor()
+        self.val_transform = torchvision.transforms.ToTensor()
+        self.test_transform = torchvision.transforms.ToTensor()
 
     def _create_datasets(self, dataset):
         self.train_dataset = CosmicDataset(dataset['train'], self.labels, self.train_transform)
@@ -72,22 +65,19 @@ class CosmicCNN(nn.Module):
         self.train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.workers_num
+            shuffle=True
         )
 
         self.val_loader = DataLoader(
             self.validation_dataset,
             batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.workers_num
+            shuffle=False
         )
 
         self.test_loader = DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.workers_num
+            shuffle=False
         )
 
     def forward(self, x):
@@ -97,6 +87,12 @@ class CosmicCNN(nn.Module):
         x = self.conv2(x)
         x = self.relu(x)
         x = self.pool2(x)
+        x = self.conv3(x)
+        x = self.relu(x)
+        x = self.pool3(x)
+        x = self.conv4(x)
+        x = self.relu(x)
+        x = self.pool4(x)
         x = self.flatten(x)
         x = self.layer1(x)
         x = self.relu(x)
@@ -192,27 +188,23 @@ class CosmicCNN(nn.Module):
         accuracy = correct / total
 
         matrix = confusion_matrix(all_targets, all_predictions)
+        report = classification_report(
+            all_targets,
+            all_predictions,
+            labels=list(range(len(self.labels))),
+            target_names=self.labels
+        )
 
-        return accuracy, average_loss, matrix
+        return accuracy, average_loss, matrix, report
 
     def see_the_world_my_child(self):
         print("Starting training")
         self._train()
-        test_accuracy, test_loss, conf_matrix = self._test()
+        test_accuracy, test_loss, conf_matrix, report = self._test()
 
         print(
             f"Test accuracy: {test_accuracy:4f}\n"
             f"Test loss: {test_loss:4f}\n"
-            f"Confusion matrix:\n{conf_matrix}"
+            f"Confusion matrix:\n{self.labels}\n{conf_matrix}\n"
+            f"Report:\n{report}"
         )
-
-    def diagnose(self):
-        start = time.perf_counter()
-
-        for batch_counter, (x, y) in enumerate(self.train_loader):
-            if batch_counter >= 10:
-                break
-
-        end = time.perf_counter()
-
-        print(f"10 batches loading time: {end - start}")
