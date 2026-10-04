@@ -40,6 +40,7 @@ class CosmicCNN(nn.Module):
         self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
         self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
         self.flatten = nn.Flatten()
         self.layer1 = nn.Linear(16384, 512)
         self.layer2 = nn.Linear(512, 128)
@@ -99,6 +100,7 @@ class CosmicCNN(nn.Module):
         x = self.flatten(x)
         x = self.layer1(x)
         x = self.relu(x)
+        x = self.dropout(x)
         x = self.layer2(x)
         x = self.relu(x)
         x = self.layer_out(x)
@@ -166,7 +168,9 @@ class CosmicCNN(nn.Module):
         return accuracy, average_loss
 
     def _test(self):
-        torch.load(path.join(self.states_path, "best_model_state.pth"))
+        self.load_state_dict(
+            torch.load(path.join(self.states_path, "best_model_state.pth"))
+        )
         self.eval()
 
         all_predictions = []
