@@ -3,6 +3,7 @@ import pandas as pd
 import os
 
 pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
 
 df = pd.read_csv('data/ukidss_catalog.csv')
 
@@ -50,13 +51,26 @@ questions_answers = dict((q, {'votes': [], 'fractions': []}) for q in map(column
 for col in learning_columns:
     column = column_start(col)
     if col.endswith('fraction'):
-        questions_answers[column]['fractions'].append(column_end(col))
+        questions_answers[column]['fractions'].append(col)
     else:
-        questions_answers[column]['votes'].append(column_end(col))
+        questions_answers[column]['votes'].append(col)
 
-reconstruct_columns = lambda col_list, prefix: [prefix + separator + i for i in col_list]
-get_columns = lambda key: reconstruct_columns(questions_answers[key]['votes'], key) + reconstruct_columns(questions_answers[key]['fractions'], key)
+reconstruct_columns = lambda col_list, prefix: [i for i in col_list]
+get_part_columns = lambda key, group: reconstruct_columns(questions_answers[key][group], key)
+get_full_columns = lambda key: reconstruct_columns(questions_answers[key]['votes'], key) + reconstruct_columns(questions_answers[key]['fractions'], key)
 
-print(df[get_columns('smooth-or-featured')].head(10))
+get_grouped_df = lambda key: pd.DataFrame().from_dict(questions_answers[key])
+
+# for i in questions_answers:
+#     print(i + ":")
+#     print(df[get_grouped_df(i)["votes"]].sum(axis=1).unique(), end='\n\n')
+#
+
+# for i in questions_answers:
+#     print(i + ":")
+#     print(df[df[get_grouped_df(i)["fractions"]].sum(axis=1) == 0].head(1), end='\n\n')
+
+print(questions_answers.keys())
+print(df[df[get_grouped_df('how-rounded')["fractions"]].sum(axis=1) == 0].iloc[2], end='\n\n')
 
 
