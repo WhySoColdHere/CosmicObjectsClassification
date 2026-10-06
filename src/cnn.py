@@ -108,9 +108,8 @@ class CosmicCNN(nn.Module):
         return x
 
     def _train(self):
-        self.train()
-
         for epoch in range(self.epochs):
+            self.train()
             total_loss = 0
 
             for x_batch_img, y_batch_lb in self.train_loader:
