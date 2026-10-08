@@ -1,5 +1,5 @@
 import torch
-from pandas import Series
+from funcs_storage import FuncsStorage
 from cosmic_dataset import CosmicDataset
 import torchvision
 from torch.utils.data import DataLoader
@@ -9,14 +9,14 @@ from os import path
 
 
 class CosmicCNN(nn.Module):
-    def __init__(self, dataset: Series):
+    def __init__(self, dataset):
         super().__init__()
         self.batch_size = 32
-        self.labels = dataset['labels']
         self.epochs = 10
         self.best_validation_loss = float('inf')
         self.best_validation_loss_epoch = 0
         self.states_path = path.join("../", "states")
+        self.questions_answers = FuncsStorage.get_dataset_structure(dataset['test'].columns)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.train_transform = None
@@ -38,13 +38,16 @@ class CosmicCNN(nn.Module):
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
         self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.gap1 = nn.AdaptiveAvgPool2d((1, 1))
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.5)
         self.flatten = nn.Flatten()
-        self.layer1 = nn.Linear(16384, 512)
-        self.layer2 = nn.Linear(512, 128)
-        self.layer_out = nn.Linear(128, 8)
+        self.layer1 = nn.Linear(256, 128)
+        self.layer2 = nn.Linear(128, 64)
+
+        self.heads = nn.ModuleDict()
+        for question in self.questions_answers:
+            self.heads[question] = nn.Linear(64, len(self.questions_answers[question]))
 
         self.criterion = nn.CrossEntropyLoss()
 
@@ -61,9 +64,9 @@ class CosmicCNN(nn.Module):
         self.test_transform = torchvision.transforms.ToTensor()
 
     def _create_datasets(self, dataset):
-        self.train_dataset = CosmicDataset(dataset['train'], self.labels, self.train_transform)
-        self.validation_dataset = CosmicDataset(dataset['validation'], self.labels, self.val_transform)
-        self.test_dataset = CosmicDataset(dataset['test'], self.labels, self.test_transform)
+        self.train_dataset = CosmicDataset(dataset['train'], self.train_transform)
+        self.validation_dataset = CosmicDataset(dataset['validation'], self.val_transform)
+        self.test_dataset = CosmicDataset(dataset['test'], self.test_transform)
 
     def _create_dataloaders(self):
         self.train_loader = DataLoader(
@@ -96,16 +99,19 @@ class CosmicCNN(nn.Module):
         x = self.pool3(x)
         x = self.conv4(x)
         x = self.relu(x)
-        x = self.pool4(x)
+        x = self.gap1(x)
         x = self.flatten(x)
         x = self.layer1(x)
         x = self.relu(x)
         x = self.dropout(x)
         x = self.layer2(x)
         x = self.relu(x)
-        x = self.layer_out(x)
 
-        return x
+        heads_res = dict()
+        for question in self.heads:
+            heads_res[question] = self.heads[question](x)
+
+        return heads_res
 
     def _train(self):
         for epoch in range(self.epochs):
@@ -209,15 +215,37 @@ class CosmicCNN(nn.Module):
 
         return accuracy, average_loss, matrix, report
 
-    def see_the_world_my_child(self):
-        print("Starting training")
-        self._train()
-        test_accuracy, test_loss, conf_matrix, report = self._test()
+    def _move_batch_to_device(self, batch):
+        for key in batch:
+            batch[key] = batch[key].to(self.device)
+        return batch
 
-        print(
-            f"Test accuracy: {test_accuracy:4f}\n"
-            f"Test loss: {test_loss:4f}\n"
-            f"Confusion matrix:\n{self.labels}\n{conf_matrix}\n"
-            f"Report:\n{report}"
-            f"Model epoch: {self.best_validation_loss_epoch}\n"
-        )
+    def see_the_world_my_child(self):
+        counter = 0
+        for x_batch_img, y_batch_target, z_batch_mask in self.train_loader:
+            x_batch_img = x_batch_img.to(self.device)
+            y_batch_target = self._move_batch_to_device(y_batch_target)
+            z_batch_mask = self._move_batch_to_device(z_batch_mask)
+            output = self(x_batch_img)
+
+            for key in z_batch_mask:
+                for i in range(len(z_batch_mask[key])):
+                    if z_batch_mask[key][i]:
+                        print(output[key][i])
+                        print(y_batch_target[key][i])
+
+            counter += 1
+            if counter == 1:
+                break
+
+        # print("Starting training")
+        # self._train()
+        # test_accuracy, test_loss, conf_matrix, report = self._test()
+        #
+        # print(
+        #     f"Test accuracy: {test_accuracy:4f}\n"
+        #     f"Test loss: {test_loss:4f}\n"
+        #     f"Confusion matrix:\n{self.labels}\n{conf_matrix}\n"
+        #     f"Report:\n{report}"
+        #     f"Model epoch: {self.best_validation_loss_epoch}\n"
+        # )
