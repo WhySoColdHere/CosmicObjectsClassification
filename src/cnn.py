@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from funcs_storage import FuncsStorage
 from cosmic_dataset import CosmicDataset
 import torchvision
@@ -6,13 +7,16 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 from sklearn.metrics import confusion_matrix, classification_report
 from os import path
+import time
 
 
 class CosmicCNN(nn.Module):
     def __init__(self, dataset):
         super().__init__()
-        self.batch_size = 32
+        self.batch_size = 64
+        self.img_size = 128
         self.epochs = 10
+        self.num_workers = 8
         self.best_validation_loss = float('inf')
         self.best_validation_loss_epoch = 0
         self.states_path = path.join("../", "states")
@@ -49,7 +53,7 @@ class CosmicCNN(nn.Module):
         for question in self.questions_answers:
             self.heads[question] = nn.Linear(64, len(self.questions_answers[question]))
 
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.KLDivLoss(reduction='batchmean')
 
         self.to(self.device)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
@@ -59,9 +63,12 @@ class CosmicCNN(nn.Module):
         self._create_dataloaders()
 
     def _create_transforms(self):
-        self.train_transform = torchvision.transforms.ToTensor()
-        self.val_transform = torchvision.transforms.ToTensor()
-        self.test_transform = torchvision.transforms.ToTensor()
+        self.train_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
+        self.val_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
+        self.test_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
 
     def _create_datasets(self, dataset):
         self.train_dataset = CosmicDataset(dataset['train'], self.train_transform)
@@ -72,19 +79,28 @@ class CosmicCNN(nn.Module):
         self.train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=True
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
         )
 
         self.val_loader = DataLoader(
             self.validation_dataset,
             batch_size=self.batch_size,
-            shuffle=False
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
         )
 
         self.test_loader = DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            shuffle=False
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
         )
 
     def forward(self, x):
@@ -115,31 +131,45 @@ class CosmicCNN(nn.Module):
 
     def _train(self):
         for epoch in range(self.epochs):
+            print(f'Epoch {epoch + 1} started')
+            start = time.perf_counter()
+
             self.train()
-            total_loss = 0
-
-            for x_batch_img, y_batch_lb in self.train_loader:
+            epoch_loss = 0
+            for x_batch_img, y_batch_target, z_batch_mask in self.train_loader:
                 self.optimizer.zero_grad()
-                x_batch_img = x_batch_img.to(self.device)
-                y_batch_lb = y_batch_lb.to(self.device)
-
+                total_loss = 0
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
                 output = self(x_batch_img)
-                loss = self.criterion(output, y_batch_lb)
 
-                loss.backward()
+                batch_losses = []
+
+                for key in z_batch_mask:
+                    if z_batch_mask[key].any():
+                        output_bar = output[key][z_batch_mask[key]]
+                        target_bar = y_batch_target[key][z_batch_mask[key]]
+
+                        log_probs = F.log_softmax(output_bar, dim=1)
+                        loss = self.criterion(log_probs, target_bar)
+                        batch_losses.append(loss)
+
+                if not batch_losses:
+                    continue
+
+                total_loss = torch.stack(batch_losses).mean()
+                total_loss.backward()
                 self.optimizer.step()
 
-                total_loss += loss.item()
+                epoch_loss += total_loss.item()
 
-            train_loss = total_loss / len(self.train_loader)
-            val_accuracy, val_loss = self._validation()
+            average_epoch_loss = epoch_loss / len(self.train_loader)
+            print(f'Epoch {epoch + 1}, loss: {average_epoch_loss}')
+            print(f"Epoch time: {time.perf_counter() - start}")
 
-            print(
-                f"Epoch {epoch + 1} / {self.epochs} "
-                f"| train loss: {train_loss:4f} "
-                f" validation loss: {val_loss:4f} "
-                f" validation accuracy: {val_accuracy:4f}"
-            )
+            val_loss = self._validation()
+            print(f'Validation loss: {val_loss}')
 
             if val_loss < self.best_validation_loss:
                 self.best_validation_loss = val_loss
@@ -148,104 +178,61 @@ class CosmicCNN(nn.Module):
 
     def _validation(self):
         self.eval()
-
         total_loss = 0
-        correct = 0
-        total = 0
 
         with torch.no_grad():
-            for x_batch_img, y_batch_lb in self.val_loader:
-                x_batch_img = x_batch_img.to(self.device)
-                y_batch_lb = y_batch_lb.to(self.device)
-
+            for x_batch_img, y_batch_target, z_batch_mask in self.val_loader:
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
                 output = self(x_batch_img)
-                loss = self.criterion(output, y_batch_lb)
+                batch_losses = []
 
-                total_loss += loss.item()
+                for key in z_batch_mask:
+                    if z_batch_mask[key].any():
+                        output_bar = output[key][z_batch_mask[key]]
+                        target_bar = y_batch_target[key][z_batch_mask[key]]
+                        log_probs = F.log_softmax(output_bar, dim=1)
+                        loss = self.criterion(log_probs, target_bar)
+                        batch_losses.append(loss)
+                total_loss += torch.stack(batch_losses).mean().item()
 
-                predictions = output.argmax(dim=1)
-                correct += (predictions == y_batch_lb).sum().item()
-                total += y_batch_lb.size(0)
-
-        average_loss = total_loss / len(self.val_loader)
-        accuracy = correct / total
-
-        return accuracy, average_loss
+            average_loss = total_loss / len(self.val_loader)
+            return average_loss
 
     def _test(self):
         self.load_state_dict(
-            torch.load(path.join(self.states_path, "best_model_state.pth"))
+            torch.load(path.join(self.states_path, "best_model_state.pth"), map_location=self.device)
         )
+
         self.eval()
-
-        all_predictions = []
-        all_targets = []
-
         total_loss = 0
-        correct = 0
-        total = 0
 
         with torch.no_grad():
-            for x_batch_img, y_batch_lb in self.test_loader:
-                x_batch_img = x_batch_img.to(self.device)
-                y_batch_lb = y_batch_lb.to(self.device)
-
+            for x_batch_img, y_batch_target, z_batch_mask in self.test_loader:
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
                 output = self(x_batch_img)
-                loss = self.criterion(output, y_batch_lb)
+                batch_losses = []
 
-                total_loss += loss.item()
+                for key in z_batch_mask:
+                    if z_batch_mask[key].any():
+                        output_bar = output[key][z_batch_mask[key]]
+                        target_bar = y_batch_target[key][z_batch_mask[key]]
+                        log_probs = F.log_softmax(output_bar, dim=1)
+                        loss = self.criterion(log_probs, target_bar)
+                        batch_losses.append(loss)
+                total_loss += torch.stack(batch_losses).mean().item()
 
-                predictions = output.argmax(dim=1)
-                correct += (predictions == y_batch_lb).sum().item()
-
-                all_predictions.extend(predictions.cpu().numpy())
-                all_targets.extend(y_batch_lb.cpu().numpy())
-                total += y_batch_lb.size(0)
-
-        average_loss = total_loss / len(self.test_loader)
-        accuracy = correct / total
-
-        matrix = confusion_matrix(all_targets, all_predictions)
-        report = classification_report(
-            all_targets,
-            all_predictions,
-            labels=list(range(len(self.labels))),
-            target_names=self.labels
-        )
-
-        return accuracy, average_loss, matrix, report
+            average_loss = total_loss / len(self.val_loader)
+            return average_loss
 
     def _move_batch_to_device(self, batch):
         for key in batch:
-            batch[key] = batch[key].to(self.device)
+            batch[key] = batch[key].to(self.device, non_blocking=True)
         return batch
 
     def see_the_world_my_child(self):
-        counter = 0
-        for x_batch_img, y_batch_target, z_batch_mask in self.train_loader:
-            x_batch_img = x_batch_img.to(self.device)
-            y_batch_target = self._move_batch_to_device(y_batch_target)
-            z_batch_mask = self._move_batch_to_device(z_batch_mask)
-            output = self(x_batch_img)
-
-            for key in z_batch_mask:
-                for i in range(len(z_batch_mask[key])):
-                    if z_batch_mask[key][i]:
-                        print(output[key][i])
-                        print(y_batch_target[key][i])
-
-            counter += 1
-            if counter == 1:
-                break
-
-        # print("Starting training")
-        # self._train()
-        # test_accuracy, test_loss, conf_matrix, report = self._test()
-        #
-        # print(
-        #     f"Test accuracy: {test_accuracy:4f}\n"
-        #     f"Test loss: {test_loss:4f}\n"
-        #     f"Confusion matrix:\n{self.labels}\n{conf_matrix}\n"
-        #     f"Report:\n{report}"
-        #     f"Model epoch: {self.best_validation_loss_epoch}\n"
-        # )
+        self._train()
+        self._test()
