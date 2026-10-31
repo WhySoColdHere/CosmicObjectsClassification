@@ -7,7 +7,7 @@ class Controller:
     def __init__(self):
         start = time.perf_counter()
         cnn = CosmicCNN(DataCleaner(DATASET_PATH).get_split_data())
-        cnn.see_the_world_my_child()
+        cnn.run()
         end = time.perf_counter()
 
         print(f"Elapsed time: {end - start}")

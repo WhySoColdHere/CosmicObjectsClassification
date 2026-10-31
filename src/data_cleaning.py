@@ -13,6 +13,8 @@ class DataCleaner:
         path_to_img_folder = os.path.join(self.path_to_dataset, 'ukidss_final')
 
         df = pd.read_csv(path_to_csv_df)
+        df = df.sample(frac=0.35, random_state=self.split_seed).reset_index(drop=True)
+
         df['filepath'] = df['subfolder'] + r'/' + df['filename']
         df['filepath'] = df['filepath'].apply(lambda path_img, path_f: os.path.join(path_f, path_img),
                                               args=(path_to_img_folder,))
@@ -27,3 +29,5 @@ class DataCleaner:
         validation_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=self.split_seed)
 
         return {'train': train_df, 'validation': validation_df, 'test': test_df}
+
+

@@ -15,7 +15,7 @@ class CosmicCNN(nn.Module):
         super().__init__()
         self.batch_size = 64
         self.img_size = 128
-        self.epochs = 10
+        self.epochs = 20
         self.num_workers = 8
         self.best_validation_loss = float('inf')
         self.best_validation_loss_epoch = 0
@@ -42,7 +42,7 @@ class CosmicCNN(nn.Module):
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
         self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
-        self.gap1 = nn.AdaptiveAvgPool2d((1, 1))
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.5)
         self.flatten = nn.Flatten()
@@ -115,7 +115,7 @@ class CosmicCNN(nn.Module):
         x = self.pool3(x)
         x = self.conv4(x)
         x = self.relu(x)
-        x = self.gap1(x)
+        x = self.gap(x)
         x = self.flatten(x)
         x = self.layer1(x)
         x = self.relu(x)
@@ -123,6 +123,7 @@ class CosmicCNN(nn.Module):
         x = self.layer2(x)
         x = self.relu(x)
 
+        print(x.shape)
         heads_res = dict()
         for question in self.heads:
             heads_res[question] = self.heads[question](x)
@@ -138,7 +139,6 @@ class CosmicCNN(nn.Module):
             epoch_loss = 0
             for x_batch_img, y_batch_target, z_batch_mask in self.train_loader:
                 self.optimizer.zero_grad()
-                total_loss = 0
                 x_batch_img = x_batch_img.to(self.device, non_blocking=True)
                 y_batch_target = self._move_batch_to_device(y_batch_target)
                 z_batch_mask = self._move_batch_to_device(z_batch_mask)
@@ -195,6 +195,10 @@ class CosmicCNN(nn.Module):
                         log_probs = F.log_softmax(output_bar, dim=1)
                         loss = self.criterion(log_probs, target_bar)
                         batch_losses.append(loss)
+
+                if not batch_losses:
+                    continue
+
                 total_loss += torch.stack(batch_losses).mean().item()
 
             average_loss = total_loss / len(self.val_loader)
@@ -204,9 +208,10 @@ class CosmicCNN(nn.Module):
         self.load_state_dict(
             torch.load(path.join(self.states_path, "best_model_state.pth"), map_location=self.device)
         )
-
         self.eval()
-        total_loss = 0
+
+        all_log_probs = {q: [] for q in self.questions_answers}
+        all_targets = {q: [] for q in self.questions_answers}
 
         with torch.no_grad():
             for x_batch_img, y_batch_target, z_batch_mask in self.test_loader:
@@ -214,25 +219,58 @@ class CosmicCNN(nn.Module):
                 y_batch_target = self._move_batch_to_device(y_batch_target)
                 z_batch_mask = self._move_batch_to_device(z_batch_mask)
                 output = self(x_batch_img)
-                batch_losses = []
 
-                for key in z_batch_mask:
-                    if z_batch_mask[key].any():
-                        output_bar = output[key][z_batch_mask[key]]
-                        target_bar = y_batch_target[key][z_batch_mask[key]]
-                        log_probs = F.log_softmax(output_bar, dim=1)
-                        loss = self.criterion(log_probs, target_bar)
-                        batch_losses.append(loss)
-                total_loss += torch.stack(batch_losses).mean().item()
+                for question in self.questions_answers:
+                    mask = z_batch_mask[question]
 
-            average_loss = total_loss / len(self.val_loader)
-            return average_loss
+                    if not mask.any():
+                        continue
+
+                    logits = output[question][mask]
+                    targets = y_batch_target[question][mask]
+
+                    log_probs = F.log_softmax(logits, dim=1)
+
+                    all_log_probs[question].append(log_probs.cpu())
+                    all_targets[question].append(targets.cpu())
+
+        for question in self.questions_answers:
+            if not all_targets[question]:
+                continue
+
+            log_probs = torch.cat(all_log_probs[question], dim=0)
+            targets = torch.cat(all_targets[question], dim=0)
+
+            predictions = log_probs.exp()
+            kl_divergence = F.kl_div(log_probs, targets, reduction="batchmean").item()
+            mae = torch.abs(predictions - targets).mean().item()
+
+            y_true = targets.argmax(dim=1).numpy()
+            y_pred = predictions.argmax(dim=1).numpy()
+            class_labels = list(range(len(self.questions_answers[question])))
+
+            conf_matrix = confusion_matrix(y_true, y_pred, labels=class_labels)
+            report = classification_report(
+                y_true,
+                y_pred,
+                labels=class_labels,
+                target_names=self.questions_answers[question],
+                zero_division=0
+            )
+
+            print(f"\n{'=' * 50}")
+            print(f"Question: {question}")
+            print(f"KL Divergence: {kl_divergence:.6f}")
+            print(f"MAE: {mae:.6f}")
+            print(f"Confusion Matrix:\n{conf_matrix}")
+            print(f"Classification Report:\n{report}")
 
     def _move_batch_to_device(self, batch):
         for key in batch:
             batch[key] = batch[key].to(self.device, non_blocking=True)
         return batch
 
-    def see_the_world_my_child(self):
+    def run(self):
         self._train()
         self._test()
+
