@@ -1,16 +1,276 @@
-from conf import DATASET_PATH
-from data_cleaning import DataCleaner
-
+import torch
+import torch.nn.functional as F
+from funcs_storage import FuncsStorage
 from cosmic_dataset import CosmicDataset
+import torchvision
+from torch.utils.data import DataLoader
+import torch.nn as nn
+from sklearn.metrics import confusion_matrix, classification_report
+from os import path
+import time
 
 
-class CNN:
+class CosmicCNN(nn.Module):
     def __init__(self, dataset):
-        train_dataset = CosmicDataset(dataset['train'])
-        validation_dataset = CosmicDataset(dataset['validation'])
-        test_dataset = CosmicDataset(dataset['test'])
+        super().__init__()
+        self.batch_size = 64
+        self.img_size = 128
+        self.epochs = 20
+        self.num_workers = 8
+        self.best_validation_loss = float('inf')
+        self.best_validation_loss_epoch = 0
+        self.states_path = path.join("../", "states")
+        self.questions_answers = FuncsStorage.get_dataset_structure(dataset['test'].columns)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        print(train_dataset[0])
+        self.train_transform = None
+        self.val_transform = None
+        self.test_transform = None
 
+        self.train_dataset = None
+        self.validation_dataset = None
+        self.test_dataset = None
 
-cnn = CNN(DataCleaner(DATASET_PATH).get_split_data())
+        self.train_loader = None
+        self.val_loader = None
+        self.test_loader = None
+
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.gap = nn.AdaptiveAvgPool2d((1, 1))
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
+        self.flatten = nn.Flatten()
+        self.layer1 = nn.Linear(256, 128)
+        self.layer2 = nn.Linear(128, 64)
+
+        self.heads = nn.ModuleDict()
+        for question in self.questions_answers:
+            self.heads[question] = nn.Linear(64, len(self.questions_answers[question]))
+
+        self.criterion = nn.KLDivLoss(reduction='batchmean')
+
+        self.to(self.device)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+
+        self._create_transforms()
+        self._create_datasets(dataset)
+        self._create_dataloaders()
+
+    def _create_transforms(self):
+        self.train_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
+        self.val_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
+        self.test_transform = torchvision.transforms.Compose(
+            [torchvision.transforms.Resize((self.img_size, self.img_size)), torchvision.transforms.ToTensor()])
+
+    def _create_datasets(self, dataset):
+        self.train_dataset = CosmicDataset(dataset['train'], self.train_transform)
+        self.validation_dataset = CosmicDataset(dataset['validation'], self.val_transform)
+        self.test_dataset = CosmicDataset(dataset['test'], self.test_transform)
+
+    def _create_dataloaders(self):
+        self.train_loader = DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
+        )
+
+        self.val_loader = DataLoader(
+            self.validation_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
+        )
+
+        self.test_loader = DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
+        )
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.pool2(x)
+        x = self.conv3(x)
+        x = self.relu(x)
+        x = self.pool3(x)
+        x = self.conv4(x)
+        x = self.relu(x)
+        x = self.gap(x)
+        x = self.flatten(x)
+        x = self.layer1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.layer2(x)
+        x = self.relu(x)
+
+        print(x.shape)
+        heads_res = dict()
+        for question in self.heads:
+            heads_res[question] = self.heads[question](x)
+
+        return heads_res
+
+    def _train(self):
+        for epoch in range(self.epochs):
+            print(f'Epoch {epoch + 1} started')
+            start = time.perf_counter()
+
+            self.train()
+            epoch_loss = 0
+            for x_batch_img, y_batch_target, z_batch_mask in self.train_loader:
+                self.optimizer.zero_grad()
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
+                output = self(x_batch_img)
+
+                batch_losses = []
+
+                for key in z_batch_mask:
+                    if z_batch_mask[key].any():
+                        output_bar = output[key][z_batch_mask[key]]
+                        target_bar = y_batch_target[key][z_batch_mask[key]]
+
+                        log_probs = F.log_softmax(output_bar, dim=1)
+                        loss = self.criterion(log_probs, target_bar)
+                        batch_losses.append(loss)
+
+                if not batch_losses:
+                    continue
+
+                total_loss = torch.stack(batch_losses).mean()
+                total_loss.backward()
+                self.optimizer.step()
+
+                epoch_loss += total_loss.item()
+
+            average_epoch_loss = epoch_loss / len(self.train_loader)
+            print(f'Epoch {epoch + 1}, loss: {average_epoch_loss}')
+            print(f"Epoch time: {time.perf_counter() - start}")
+
+            val_loss = self._validation()
+            print(f'Validation loss: {val_loss}')
+
+            if val_loss < self.best_validation_loss:
+                self.best_validation_loss = val_loss
+                self.best_validation_loss_epoch = epoch + 1
+                torch.save(self.state_dict(), path.join(self.states_path, "best_model_state.pth"))
+
+    def _validation(self):
+        self.eval()
+        total_loss = 0
+
+        with torch.no_grad():
+            for x_batch_img, y_batch_target, z_batch_mask in self.val_loader:
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
+                output = self(x_batch_img)
+                batch_losses = []
+
+                for key in z_batch_mask:
+                    if z_batch_mask[key].any():
+                        output_bar = output[key][z_batch_mask[key]]
+                        target_bar = y_batch_target[key][z_batch_mask[key]]
+                        log_probs = F.log_softmax(output_bar, dim=1)
+                        loss = self.criterion(log_probs, target_bar)
+                        batch_losses.append(loss)
+
+                if not batch_losses:
+                    continue
+
+                total_loss += torch.stack(batch_losses).mean().item()
+
+            average_loss = total_loss / len(self.val_loader)
+            return average_loss
+
+    def _test(self):
+        self.load_state_dict(
+            torch.load(path.join(self.states_path, "best_model_state.pth"), map_location=self.device)
+        )
+        self.eval()
+
+        all_log_probs = {q: [] for q in self.questions_answers}
+        all_targets = {q: [] for q in self.questions_answers}
+
+        with torch.no_grad():
+            for x_batch_img, y_batch_target, z_batch_mask in self.test_loader:
+                x_batch_img = x_batch_img.to(self.device, non_blocking=True)
+                y_batch_target = self._move_batch_to_device(y_batch_target)
+                z_batch_mask = self._move_batch_to_device(z_batch_mask)
+                output = self(x_batch_img)
+
+                for question in self.questions_answers:
+                    mask = z_batch_mask[question]
+
+                    if not mask.any():
+                        continue
+
+                    logits = output[question][mask]
+                    targets = y_batch_target[question][mask]
+
+                    log_probs = F.log_softmax(logits, dim=1)
+
+                    all_log_probs[question].append(log_probs.cpu())
+                    all_targets[question].append(targets.cpu())
+
+        for question in self.questions_answers:
+            if not all_targets[question]:
+                continue
+
+            log_probs = torch.cat(all_log_probs[question], dim=0)
+            targets = torch.cat(all_targets[question], dim=0)
+
+            predictions = log_probs.exp()
+            kl_divergence = F.kl_div(log_probs, targets, reduction="batchmean").item()
+            mae = torch.abs(predictions - targets).mean().item()
+
+            y_true = targets.argmax(dim=1).numpy()
+            y_pred = predictions.argmax(dim=1).numpy()
+            class_labels = list(range(len(self.questions_answers[question])))
+
+            conf_matrix = confusion_matrix(y_true, y_pred, labels=class_labels)
+            report = classification_report(
+                y_true,
+                y_pred,
+                labels=class_labels,
+                target_names=self.questions_answers[question],
+                zero_division=0
+            )
+
+            print(f"\n{'=' * 50}")
+            print(f"Question: {question}")
+            print(f"KL Divergence: {kl_divergence:.6f}")
+            print(f"MAE: {mae:.6f}")
+            print(f"Confusion Matrix:\n{conf_matrix}")
+            print(f"Classification Report:\n{report}")
+
+    def _move_batch_to_device(self, batch):
+        for key in batch:
+            batch[key] = batch[key].to(self.device, non_blocking=True)
+        return batch
+
+    def run(self):
+        self._train()
+        self._test()
+

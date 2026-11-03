@@ -1,4 +1,5 @@
 /.idea
 /data
 /.venv
-
+states/best_model_state.pth
+notes.txt
